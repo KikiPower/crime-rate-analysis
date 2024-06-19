@@ -1,0 +1,316 @@
+---
+title: "Serious Crime Rate"
+author: "Ming Gan"
+date: "2024-05-24"
+output:
+  word_document: default
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+source("/Users/mingqiangan/Downloads/STA 145 Final/regression_gprior.R")
+source("/Users/mingqiangan/Downloads/STA 145 Final/backselect.R")
+library("ash")
+```
+
+```{r}
+Demographic <- read.table("/Users/mingqiangan/Downloads/STA 145 Final/data/Demographic.txt")
+
+colnames(Demographic) <-c('ID','County','state','Land_area','total_population','Population_18to34','Population_65','Physicians','beds','Y_i','Graduate_highschool','Graduate_Bachelor','below_poverty','unemployment','capita_income','personal_income','Geographic_region')
+ 
+head(Demographic)
+
+dim(Demographic)
+attach(Demographic) 
+
+region_1 <- Demographic[Geographic_region == 1,]
+region_2 <- Demographic[Geographic_region == 2,]
+region_3 <- Demographic[Geographic_region == 3,]
+region_4 <- Demographic[Geographic_region == 4,]
+
+n1<-nrow(region_1)
+n2<-nrow(region_2)
+n3<-nrow(region_3)
+n4<-nrow(region_4)
+
+summary(Demographic)
+
+```
+```{r, echo= FALSE, fig.width=7}
+#=============================================================
+# log(Y_i) = Beta_0 + Beta_1*below_poverty + Beta_2*capita_income
+#=============================================================
+#region 1
+attach(region_1)
+print("Region 1: Pairs and Correlation")
+pairs(cbind(log(Y_i), total_population,  below_poverty , unemployment, capita_income, personal_income))
+cor(cbind(log(Y_i), total_population,  below_poverty , unemployment, capita_income, personal_income))
+
+print("Region 1: Boxplots")
+par(mfrow=c(2,2))
+boxplot(cbind(log(Y_i)[Geographic_region == 1], below_poverty[Geographic_region == 1], unemployment[Geographic_region == 1]),names=c("Log(Total serious crimes)","Poverty level ","Unemployment "))
+boxplot(cbind( capita_income[Geographic_region == 1], personal_income[Geographic_region == 1]),names=c("Capita Income ","Personal income "))
+boxplot(total_population[Geographic_region ==1], xlab ="Total Population")
+```
+
+```{r, echo= FALSE}
+print("Region 1: Summary statistics")
+summary(cbind(log(Y_i), total_population,  below_poverty , unemployment, capita_income, personal_income))
+detach(region_1)
+attach(Demographic)
+#demographic
+print("Demographic: Summary statistics")
+summary(cbind(log(Y_i), total_population,  below_poverty , unemployment, capita_income, personal_income))
+```
+
+
+```{r}
+#================================== 
+# Frequentest (region 1)
+#================================== 
+model_r_1 <- lm(log(Y_i)~  below_poverty + capita_income , data = region_1)
+#summary(lm(log(Y_i)~  below_poverty + capita_income , data = region_2))
+#summary(lm(log(Y_i)~  below_poverty + capita_income , data = region_3))
+#summary(lm(log(Y_i)~  unemployment + capita_income , data = region_4))
+
+summary(model_r_1)
+
+#diagnostic plots
+par(mfrow=c(2,2))
+plot(model_r_1)
+```
+
+## Write the Monte Carlo and Gibbs sampler algorithms to sample from y and b. (20 points).
+```{r, message=FALSE, warning=FALSE}
+#===================================
+# Bayesian 
+#===================================
+#choose region
+attach(region_1)
+
+#================================================
+# Bayesian estimation via MCMC (Monte Carlo)
+#================================================
+
+# below_poverty + capita_income 
+n<-length(Y_i)#number of rows for specific region
+X<-cbind(rep(1,n),below_poverty , capita_income ) #choose two variables
+p<-dim(X)[2] #number of columns
+y<-log(Y_i) #continuous  y
+
+#set priors
+beta.0<-rep(0,p) ; 
+Sigma.0<-diag(c(1000,1000,1000)^2,p) 
+nu.0<-1 ; 
+sigma2.0<- 1
+
+S<-5000 #5000 samples 
+
+rmvnorm<-function(n,mu,Sigma) 
+{ # samples from the multivariate normal distribution
+  E<-matrix(rnorm(n*length(mu)),n,length(mu))
+  t(  t(E%*%chol(Sigma)) +c(mu))
+}
+
+iSigma.0<-solve(Sigma.0) #initialize
+XtX<-t(X)%*%X #X^2?
+
+## store mcmc samples in these objects
+beta.post<-matrix(nrow=S,ncol=p)
+sigma2.post<-rep(NA,S)
+
+## starting value
+set.seed(1)
+sigma2<- var(residuals(lm(y~0+X))) #initialize
+
+## MCMC algorithm
+for( scan in 1:S) {
+  #update beta
+  V.beta<- solve(  iSigma.0 + XtX/sigma2 ) #posterior variance
+  E.beta<- V.beta%*%( iSigma.0%*%beta.0 + t(X)%*%y/sigma2 ) #posterior mean
+  beta<-t(rmvnorm(1, E.beta,V.beta) ) #samples MVN with posterior
+  
+  #update sigma2
+  nu.n<- nu.0+n #shape = 1+n /2
+  ss.n<-nu.0*sigma2.0 + sum((y-X%*%beta)^2) #rate = (1*1^2 + RSS/err or) /2
+  sigma2<-1/rgamma(1,nu.n/2, ss.n/2)  #inverse gamma 
+
+  #save results of this scan
+  beta.post[scan,]<-beta
+  sigma2.post[scan]<-sigma2
+}
+#
+library(coda)
+# Convert to mcmc objects for analysis
+beta_samples_mcmc <- mcmc(beta.post)
+
+```
+
+## Compute 95% confidence intervals and 95% quantile based credible intervals for the parameters beta_j , j = 1, .., p. (20 points).
+```{r, echo= FALSE}
+#95% confidence intervals from frequentest model
+ci<- confint(model_r_1, level= 0.95)
+print("95% Confidence Interval:")
+print(ci)
+
+# 95% credible intervals (also shown above in summary)
+credintervals <- t(apply(beta.post, 2, quantile, probs = c(0.025, 0.975)))
+rownames(credintervals)<- cbind("(Intercept)", "below_poverty", "capita_income")
+print("95% Credible interval")
+print(credintervals)
+```
+
+Consider alpha= 0.01 and compute the p-value for the two alternatives:
+H0 : beta_j = 0 versus Ha : beta_j != 0.
+```{r}
+# bayes approch
+# Compute the mean of the posterior samples
+beta_mean <- apply(beta.post, 2, mean)
+
+# Compute the standard deviation of the posterior samples
+beta_sd <- apply(beta.post, 2, sd)
+
+# Calculate the t-statistic for each beta_j
+t_stat <- beta_mean / beta_sd
+
+# Compute the p-value for the two-sided test
+p_values <- 2 * (1 - pnorm(abs(t_stat)))
+
+# Print the p-values
+print(p_values)
+
+```
+
+## Obtain the residuals for each fitted model and prepare the diagnostic plots for each fitted model. State the conclusions. (20 points).
+```{r, echo = FALSE}
+# Summary
+summary(beta.post)
+summary(beta_samples_mcmc)
+
+par(mfrow=c(2,2))
+#histograms
+hist(beta.post[,1],xlab=expression(beta[0]),ylab="",main="")
+abline(v=model_r_1$coefficients[1],col=2,lwd=2)
+
+hist(beta.post[,2],xlab=expression(beta[1]),ylab="",main="")
+abline(v=model_r_1$coefficients[2],col=2,lwd=2)
+
+hist(beta.post[,3],xlab=expression(beta[2]),ylab="",main="")
+abline(v=model_r_1$coefficients[3],col=2,lwd=2)
+
+hist(sigma2.post,xlab=expression(sigma^2),ylab="",main="")
+abline(v=summary(model_r_1)$sigma^2 ,col=2,lwd=2)
+
+###diagnostics 
+par(mfrow = c(1, 1))
+plot(beta.post[,2], beta.post[,3])
+
+# Compute residuals for the fitted model
+residuals <- (log(Y_i) - (beta.post %*% t(X))) / sqrt(sigma2.post)
+
+#mcmc built in diagnostics 
+par(mfrow=c(2,2))
+plot(beta_samples_mcmc)
+
+#par(mfrow=c(3,3))
+
+# Autocorrelation function 
+par(mfrow=c(1,3))
+acf(beta.post[,1],main="B_0", xlab=expression(theta))
+acf(beta.post[,2],main="B_1", xlab=expression(tilde(sigma)^2))
+acf(beta.post[,3],main="B_2", xlab=expression(tilde(sigma[0])^2))
+
+# Ergodic mean
+library(dlm)
+par(mfrow=c(1,3))
+plot(ergMean(beta.post[,1]),main="B_0", ylab=expression(theta),xlab="MCMC Samples",type="l")
+plot(ergMean(beta.post[,2]),main="B_1", ylab=expression(tilde(sigma)^2),xlab="MCMC Samples",type="l")
+plot(ergMean(beta.post[,3]),main="B_2", ylab=expression(tilde(sigma[0])^2),xlab="MCMC Samples",type="l")
+
+# Mixing ?
+par(mfrow=c(1,3))
+plot(beta.post[,1],main="B_0", ylab=expression(theta),xlab="MCMC Samples",type="l")
+plot(beta.post[,2],main="B_1", ylab=expression(tilde(sigma)^2),xlab="MCMC Samples",type="l")
+plot(beta.post[,3],main="B_2", ylab=expression(tilde(sigma[0])^2),xlab="MCMC Samples",type="l")
+```
+
+## Bounes 
+```{r}
+gibbs_sampler_with_gprior <- function(y, X, g_init = 1, nu0 = 1, s20 = 1, S = 1000) {
+  n <- nrow(X)
+  p <- ncol(X)
+  
+  # Initialize storage matrices
+  beta_post <- matrix(NA, nrow = S, ncol = p)
+  sigma2_post <- numeric(S)
+  g_post <- numeric(S)
+  
+  # Initial values
+  g <- g_init
+  sigma2 <- var(residuals(lm(y ~ 0 + X)))
+  
+  # Inverse-gamma parameters
+  nu_n <- nu0 + n
+  iXX <- solve(t(X) %*% X)
+  
+  for (s in 1:S) {
+    # Update beta
+    V_beta <- solve(g / (g + 1) * t(X) %*% X)
+    E_beta <- V_beta %*% (g / (g + 1) * t(X) %*% y)
+    beta <- t(rmvnorm(1, E_beta, V_beta))
+    
+    # Update sigma2
+    ss_n <- nu0 * s20 + sum((y - X %*% beta)^2)
+    sigma2 <- 1 / rgamma(1, nu_n / 2, ss_n / 2)
+    
+    # Update g (using Metropolis-Hastings)
+    g_proposal <- rgamma(1, shape = 2, rate = 1) # example proposal distribution
+    log_acceptance_ratio <- -2 * log(1 + g_proposal) + ( -sum((y - X %*% beta)^2) / (2 * sigma2) ) - (-2 * log(1 + g) + (-sum((y - X %*% beta)^2) / (2 * sigma2)))
+    if (log(runif(1)) < log_acceptance_ratio) {
+      g <- g_proposal
+    }
+    
+    # Store samples
+    beta_post[s, ] <- beta
+    sigma2_post[s] <- sigma2
+    g_post[s] <- g
+  }
+  
+  list(beta = beta_post, sigma2 = sigma2_post, g = g_post)
+}
+
+# Run the Gibbs sampler with g-prior
+set.seed(1)
+gibbs_results <- gibbs_sampler_with_gprior(log(Y_i), cbind(1, below_poverty, capita_income), S = 1000)
+
+# Summary of the results
+beta_post <- gibbs_results$beta
+sigma2_post <- gibbs_results$sigma2
+g_post <- gibbs_results$g
+
+# Plot the posterior densities
+par(mfrow = c(2, 2))
+plot(density(beta_post[, 1]), main = expression(beta[0]), xlab = expression(beta[0]))
+abline(v = mean(beta_post[, 1]), col = "red")
+plot(density(beta_post[, 2]), main = expression(beta[1]), xlab = expression(beta[1]))
+abline(v = mean(beta_post[, 2]), col = "red")
+plot(density(beta_post[, 3]), main = expression(beta[2]), xlab = expression(beta[2]))
+abline(v = mean(beta_post[, 3]), col = "red")
+plot(density(g_post), main = expression(g), xlab = expression(g))
+abline(v = mean(g_post), col = "red")
+
+# Frequentist results for comparison
+freq_model <- lm(log(Y_i) ~ below_poverty + capita_income)
+summary(freq_model)
+confint(freq_model)
+```
+
+
+
+### Appendix 
+```{r, ref.label=knitr::all_labels(),echo=TRUE,eval=FALSE}
+```
